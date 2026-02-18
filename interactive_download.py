@@ -635,13 +635,12 @@ class PESUInteractiveDownloader:
             for class_idx, cls in enumerate(classes, 1):
                 print(f"\n[{class_idx}/{len(classes)}] {cls['name']}")
 
-                # Clean class name for folder
+                # Clean class name for filename
                 safe_class_name = "".join(
                     c if c.isalnum() or c in (" ", "-", "_") else "_"
                     for c in cls["name"]
                 ).strip()[:60]
                 safe_class_name = "_".join(safe_class_name.split())
-                class_prefix = str(class_idx).zfill(2)
 
                 # Try selected resource types
                 for resource_id in selected_resources:
@@ -651,10 +650,8 @@ class PESUInteractiveDownloader:
                     if links:
                         print(f"  {resource_name}: {len(links)} file(s)")
 
-                        # Create resource type folder
-                        resource_dir = (
-                            unit_dir / f"{class_prefix}_{safe_class_name}" / resource_name
-                        )
+                        # Create resource type folder directly under unit (simplified structure)
+                        resource_dir = unit_dir / resource_name
                         resource_dir.mkdir(parents=True, exist_ok=True)
 
                         # Download each file (use unit-level counter, not per-class counter)
@@ -864,44 +861,39 @@ def merge_pdfs_by_type(base_dir: Path, resource_types: List[str]):
         # Merge by resource type
         for res_id in resource_types:
             resource_name = RESOURCE_TYPES[res_id]
-            pdf_files = []
+            resource_dir = unit_dir / resource_name
+            
+            if resource_dir.exists():
+                # Use natural sorting to preserve numeric order (1, 2, ..., 10, 11, not 1, 10, 11, 2)
+                pdf_files = sorted(resource_dir.glob("*.pdf"), key=natural_sort_key)
+                
+                if pdf_files:
+                    print(f"  {resource_name}: {len(pdf_files)} PDFs")
 
-            # Collect all PDFs for this resource type
-            for class_dir in sorted(unit_dir.iterdir()):
-                if class_dir.is_dir():
-                    resource_dir = class_dir / resource_name
-                    if resource_dir.exists():
-                        # Use natural sorting to preserve numeric order (1, 2, ..., 10, 11, not 1, 10, 11, 2)
-                        pdfs_in_dir = sorted(resource_dir.glob("*.pdf"), key=natural_sort_key)
-                        pdf_files.extend(pdfs_in_dir)
+                    # Create merged PDF
+                    output_file = unit_dir / f"{unit_dir.name}_{resource_name}_Merged.pdf"
 
-            if pdf_files:
-                print(f"  {resource_name}: {len(pdf_files)} PDFs")
+                    try:
+                        merger = PdfWriter()
+                        for pdf_file in pdf_files:
+                            try:
+                                merger.append(str(pdf_file))
+                                print(f"    + {pdf_file.name}")
+                            except Exception as e:
+                                print(f"    ✗ Failed to add {pdf_file.name}: {e}")
 
-                # Create merged PDF
-                output_file = unit_dir / f"{unit_dir.name}_{resource_name}_Merged.pdf"
+                        if len(merger.pages) > 0:
+                            with open(output_file, "wb") as f:
+                                merger.write(f)
+                            merger.close()
 
-                try:
-                    merger = PdfWriter()
-                    for pdf_file in pdf_files:
-                        try:
-                            merger.append(str(pdf_file))
-                            print(f"    + {pdf_file.name}")
-                        except Exception as e:
-                            print(f"    ✗ Failed to add {pdf_file.name}: {e}")
+                            size = output_file.stat().st_size
+                            print(f"    {Fore.GREEN}✓ Created {output_file.name} ({size:,} bytes, {len(merger.pages)} pages){Style.RESET_ALL}")
+                        else:
+                            print(f"    {Fore.YELLOW}⚠ No valid PDFs to merge{Style.RESET_ALL}")
 
-                    if len(merger.pages) > 0:
-                        with open(output_file, "wb") as f:
-                            merger.write(f)
-                        merger.close()
-
-                        size = output_file.stat().st_size
-                        print(f"    {Fore.GREEN}✓ Created {output_file.name} ({size:,} bytes, {len(merger.pages)} pages){Style.RESET_ALL}")
-                    else:
-                        print(f"    {Fore.YELLOW}⚠ No valid PDFs to merge{Style.RESET_ALL}")
-
-                except Exception as e:
-                    print(f"    {Fore.RED}✗ Merge failed: {e}{Style.RESET_ALL}")
+                    except Exception as e:
+                        print(f"    {Fore.RED}✗ Merge failed: {e}{Style.RESET_ALL}")
 
     print(f"\n{Fore.GREEN}✓ PDF merging complete{Style.RESET_ALL}")
 

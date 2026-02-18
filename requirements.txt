@@ -1,0 +1,15 @@
+# Core dependencies (required)
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+colorama>=0.4.6
+pypdf>=3.17.0
+
+# For PPTX repair and conversion (recommended)
+python-pptx>=0.6.21
+comtypes>=1.2.0
+
+# Optional: Cross-platform conversion (free tier has watermarks)
+# aspose-slides>=23.0
+
+# Optional: Load credentials from .env file
+python-dotenv>=1.0.0

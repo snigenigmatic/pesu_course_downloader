@@ -628,8 +628,8 @@ class PESUInteractiveDownloader:
             unit_dir = base_dir / f"Unit_{unit_idx}"
             unit_dir.mkdir(parents=True, exist_ok=True)
 
-            # Initialize file counter for this unit (continuous across all classes)
-            unit_file_counter = 1
+            # Initialize counters for each resource type (separate counter per resource type)
+            resource_counters = {res_id: 1 for res_id in selected_resources}
 
             # Process each class
             for class_idx, cls in enumerate(classes, 1):
@@ -654,11 +654,13 @@ class PESUInteractiveDownloader:
                         resource_dir = unit_dir / resource_name
                         resource_dir.mkdir(parents=True, exist_ok=True)
 
-                        # Download each file (use unit-level counter, not per-class counter)
+                        # Download each file (use resource-specific counter)
                         for link in links:
+                            current_counter = resource_counters[resource_id]
+                            
                             if link["type"] == "direct":
                                 # Direct download
-                                filename = f"{unit_file_counter}.{safe_class_name}.pdf"
+                                filename = f"{current_counter}.{safe_class_name}.pdf"
                                 output_path = resource_dir / filename
                                 with open(output_path, "wb") as f:
                                     f.write(link["content"])
@@ -667,7 +669,7 @@ class PESUInteractiveDownloader:
                                     actual_ext = self.detect_file_type(output_path)
                                     if actual_ext and actual_ext != '.pdf':
                                         # Rename with correct extension
-                                        new_filename = f"{unit_file_counter}.{safe_class_name}{actual_ext}"
+                                        new_filename = f"{current_counter}.{safe_class_name}{actual_ext}"
                                         new_path = resource_dir / new_filename
                                         output_path.rename(new_path)
                                         output_path = new_path
@@ -678,7 +680,7 @@ class PESUInteractiveDownloader:
                                     )
                                     total_downloaded += 1
                                     self.downloaded_files.append(output_path)
-                                    unit_file_counter += 1  # Increment unit-level counter
+                                    resource_counters[resource_id] += 1  # Increment resource-specific counter
                             else:
                                 # Download from link
                                 headers = {
@@ -703,8 +705,8 @@ class PESUInteractiveDownloader:
                                 elif "application/msword" in content_type:
                                     ext = ".doc"
                                 
-                                # Clean filename: number.ClassName.ext (using unit-level counter)
-                                filename = f"{unit_file_counter}.{safe_class_name}{ext}"
+                                # Clean filename: number.ClassName.ext (using resource-specific counter)
+                                filename = f"{current_counter}.{safe_class_name}{ext}"
 
                                 output_path = resource_dir / filename
 
@@ -718,7 +720,7 @@ class PESUInteractiveDownloader:
                                     actual_ext = self.detect_file_type(output_path)
                                     if actual_ext and actual_ext != ext:
                                         # Rename with correct extension
-                                        new_filename = f"{unit_file_counter}.{safe_class_name}{actual_ext}"
+                                        new_filename = f"{current_counter}.{safe_class_name}{actual_ext}"
                                         new_path = resource_dir / new_filename
                                         output_path.rename(new_path)
                                         output_path = new_path
@@ -729,7 +731,7 @@ class PESUInteractiveDownloader:
                                     )
                                     total_downloaded += 1
                                     self.downloaded_files.append(output_path)
-                                    unit_file_counter += 1  # Increment unit-level counter
+                                    resource_counters[resource_id] += 1  # Increment resource-specific counter
                                 else:
                                     print(f"    [SKIP] {filename} (empty file, deleted)")
                                     output_path.unlink()

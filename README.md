@@ -12,16 +12,7 @@ cd pesu_course_downloader
 
 ### 2. Install Dependencies
 ```bash
-# Core dependencies
-pip install requests beautifulsoup4 colorama pypdf
-```
-```bash
-# For best conversion quality (recommended)
-pip install python-pptx comtypes
-```
-```bash
-# Optional: Cross-platform conversion
-pip install aspose-slides
+pip install -r requirements.txt
 ```
 
 ### 3. Setup Credentials

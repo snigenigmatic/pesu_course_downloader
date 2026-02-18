@@ -1,0 +1,20 @@
+
+# Core dependencies
+requests>=2.28.2
+beautifulsoup4>=4.12.2
+colorama>=0.4.6
+pypdf>=3.11.0
+
+# Optional / recommended for conversion (Windows / better fidelity)
+python-pptx>=0.6.21
+comtypes>=1.1.11
+
+# Optional cross-platform conversion (commercial / optional)
+aspose-slides>=23.12
+
+# Environment variables loader
+python-dotenv>=1.0.0
+
+# Optional parser for faster/more robust HTML parsing
+lxml>=4.9.3
+

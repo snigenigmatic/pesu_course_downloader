@@ -17,11 +17,8 @@ pip install -r requirements.txt
 
 
 ### 3. Setup Credentials
-Copy `.env.example` to `.env` and add your credentials:
-```bash
-cp .env.example .env
-```
-Then edit `.env` with your PESU Academy SRN and password.
+To `.env` add your credentials:
+
 
 ### 4. Run the Downloader
 ```bash

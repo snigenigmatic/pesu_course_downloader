@@ -275,21 +275,19 @@ class OfficeConverter:
     
     def convert_pptx_to_pdf(self, input_path: Path, output_path: Path) -> Tuple[bool, str]:
         """Convert PPTX to PDF with repair and multiple conversion methods"""
-        # Try direct conversion first
-        methods = [
-            (self.convert_with_powerpoint, "PowerPoint COM"),
-            (self.convert_with_aspose_slides, "Aspose.Slides"),
-            (self.convert_with_libreoffice, "LibreOffice")
-        ]
+        # Try PowerPoint COM first (best quality)
+        if self.convert_with_powerpoint(input_path, output_path):
+            if output_path.exists() and output_path.stat().st_size > 0:
+                return True, "PowerPoint COM"
         
-        for method, method_name in methods:
-            if method(input_path, output_path):
-                if output_path.exists() and output_path.stat().st_size > 0:
-                    return True, method_name
-        
-        # If direct conversion failed, try repair first
+        # Try repair strategies before Aspose (python-pptx repair attempted here)
         repaired_path = self.repairer.attempt_repair(input_path)
         if repaired_path:
+            methods = [
+                (self.convert_with_powerpoint, "PowerPoint COM"),
+                (self.convert_with_libreoffice, "LibreOffice"),
+                (self.convert_with_aspose_slides, "Aspose.Slides")
+            ]
             for method, method_name in methods:
                 if method(repaired_path, output_path):
                     if output_path.exists() and output_path.stat().st_size > 0:
@@ -305,6 +303,17 @@ class OfficeConverter:
                 repaired_path.parent.rmdir()
             except:
                 pass
+        
+        # If repair failed, try direct conversion with remaining methods
+        remaining_methods = [
+            (self.convert_with_aspose_slides, "Aspose.Slides"),
+            (self.convert_with_libreoffice, "LibreOffice")
+        ]
+        
+        for method, method_name in remaining_methods:
+            if method(input_path, output_path):
+                if output_path.exists() and output_path.stat().st_size > 0:
+                    return True, method_name
         
         return False, "none"
     
@@ -749,8 +758,8 @@ def convert_office_to_pdf(input_folder: Path) -> List[Path]:
     print(f"\nAvailable conversion methods:")
     print(f"  • PowerPoint COM:  {'✓' if COMTYPES_AVAILABLE else '✗'} (Windows, best quality)")
     print(f"  • Word COM:        {'✓' if COMTYPES_AVAILABLE else '✗'} (Windows)")
-    print(f"  • Aspose.Slides:   {'✓' if ASPOSE_AVAILABLE else '✗'} (cross-platform)")
     print(f"  • python-pptx:     {'✓' if PPTX_AVAILABLE else '✗'} (for repair)")
+    print(f"  • Aspose.Slides:   {'✓' if ASPOSE_AVAILABLE else '✗'} (cross-platform)")
     print(f"  • LibreOffice:     checking...")
     
     if not (COMTYPES_AVAILABLE or ASPOSE_AVAILABLE):

@@ -10,7 +10,8 @@ python-pptx>=0.6.21
 comtypes>=1.1.11
 
 # Optional cross-platform conversion (commercial / optional)
-aspose-slides>=23.12
+# aspose-slides>=23.12
+# This usually provides watermark so keep it as last option
 
 # Environment variables loader
 python-dotenv>=1.0.0

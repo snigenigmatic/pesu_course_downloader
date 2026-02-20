@@ -56,6 +56,116 @@ RESOURCE_TYPES = {
 }
 
 
+class DOCXRepair:
+    """Handles various DOCX repair strategies"""
+    
+    def __init__(self):
+        pass
+    
+    def repair_with_docx(self, input_path: Path, output_path: Path) -> bool:
+        """Repair by loading and re-saving with python-docx"""
+        try:
+            import docx
+            doc = docx.Document(str(input_path))
+            doc.save(str(output_path))
+            return True
+        except Exception:
+            return False
+    
+    def repair_by_rezip(self, input_path: Path, output_path: Path) -> bool:
+        """Repair by extracting and re-zipping"""
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                try:
+                    with zipfile.ZipFile(input_path, 'r') as zip_ref:
+                        zip_ref.extractall(temp_path)
+                except zipfile.BadZipFile:
+                    return False
+                
+                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
+                    for root, dirs, files in os.walk(temp_path):
+                        for file in files:
+                            file_path = Path(root) / file
+                            arcname = file_path.relative_to(temp_path)
+                            zip_out.write(file_path, arcname)
+                return True
+        except Exception:
+            return False
+    
+    def repair_xml_relationships(self, input_path: Path, output_path: Path) -> bool:
+        """Repair broken document XML relationships"""
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                try:
+                    with zipfile.ZipFile(input_path, 'r') as zip_ref:
+                        zip_ref.extractall(temp_path)
+                except zipfile.BadZipFile:
+                    return False
+                
+                # Fix relationships in word/_rels
+                rels_dir = temp_path / "word" / "_rels"
+                if rels_dir.exists():
+                    for rels_file in rels_dir.glob("*.rels"):
+                        try:
+                            content = rels_file.read_text(encoding='utf-8')
+                            # Remove empty hyperlinks
+                            content = content.replace('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" TargetMode="External" Target=""', '')
+                            # Remove other problematic patterns
+                            content = re.sub(r'<Relationship[^>]*Target=""[^>]*/>', '', content)
+                            rels_file.write_text(content, encoding='utf-8')
+                        except Exception:
+                            pass
+                
+                # Fix document.xml if needed
+                doc_xml = temp_path / "word" / "document.xml"
+                if doc_xml.exists():
+                    try:
+                        content = doc_xml.read_text(encoding='utf-8')
+                        # Remove invalid XML characters
+                        content = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F]', '', content)
+                        doc_xml.write_text(content, encoding='utf-8')
+                    except Exception:
+                        pass
+                
+                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
+                    for root, dirs, files in os.walk(temp_path):
+                        for file in files:
+                            file_path = Path(root) / file
+                            arcname = file_path.relative_to(temp_path)
+                            zip_out.write(file_path, arcname)
+                
+                # Verify the repair worked
+                try:
+                    import docx
+                    docx.Document(str(output_path))
+                    return True
+                except:
+                    # If python-docx not available, just check if file is valid
+                    return True
+        except Exception:
+            return False
+    
+    def attempt_repair(self, input_path: Path) -> Optional[Path]:
+        """Attempt all repair strategies in order"""
+        temp_dir = Path(tempfile.mkdtemp())
+        strategies = [
+            self.repair_by_rezip,
+            self.repair_xml_relationships,
+            self.repair_with_docx,
+        ]
+        
+        for i, strategy in enumerate(strategies):
+            output_path = temp_dir / f"repaired_{i}_{input_path.name}"
+            if strategy(input_path, output_path):
+                if output_path.exists() and output_path.stat().st_size > 0:
+                    return output_path
+        
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return None
+
+
 class PPTXRepair:
     """Handles various PPTX repair strategies"""
     
@@ -155,7 +265,8 @@ class OfficeConverter:
     """Handles Office file to PDF conversion with multiple methods"""
     
     def __init__(self):
-        self.repairer = PPTXRepair()
+        self.pptx_repairer = PPTXRepair()
+        self.docx_repairer = DOCXRepair()
     
     def convert_with_powerpoint(self, input_path: Path, output_path: Path) -> bool:
         """Convert using Microsoft PowerPoint via COM automation"""
@@ -281,7 +392,7 @@ class OfficeConverter:
                 return True, "PowerPoint COM"
         
         # Try repair strategies before Aspose (python-pptx repair attempted here)
-        repaired_path = self.repairer.attempt_repair(input_path)
+        repaired_path = self.pptx_repairer.attempt_repair(input_path)
         if repaired_path:
             methods = [
                 (self.convert_with_powerpoint, "PowerPoint COM"),
@@ -293,14 +404,14 @@ class OfficeConverter:
                     if output_path.exists() and output_path.stat().st_size > 0:
                         # Cleanup repaired file
                         try:
-                            repaired_path.parent.rmdir()
+                            shutil.rmtree(repaired_path.parent, ignore_errors=True)
                         except:
                             pass
                         return True, f"{method_name} (repaired)"
             
             # Cleanup failed repair
             try:
-                repaired_path.parent.rmdir()
+                shutil.rmtree(repaired_path.parent, ignore_errors=True)
             except:
                 pass
         
@@ -318,16 +429,39 @@ class OfficeConverter:
         return False, "none"
     
     def convert_docx_to_pdf(self, input_path: Path, output_path: Path) -> Tuple[bool, str]:
-        """Convert DOCX to PDF"""
-        methods = [
-            (self.convert_with_word, "Word COM"),
-            (self.convert_with_libreoffice, "LibreOffice")
-        ]
+        """Convert DOCX to PDF with repair and multiple conversion methods"""
+        # Try Word COM first (best quality)
+        if self.convert_with_word(input_path, output_path):
+            if output_path.exists() and output_path.stat().st_size > 0:
+                return True, "Word COM"
         
-        for method, method_name in methods:
-            if method(input_path, output_path):
-                if output_path.exists() and output_path.stat().st_size > 0:
-                    return True, method_name
+        # Try repair strategies if direct conversion failed
+        repaired_path = self.docx_repairer.attempt_repair(input_path)
+        if repaired_path:
+            methods = [
+                (self.convert_with_word, "Word COM"),
+                (self.convert_with_libreoffice, "LibreOffice")
+            ]
+            for method, method_name in methods:
+                if method(repaired_path, output_path):
+                    if output_path.exists() and output_path.stat().st_size > 0:
+                        # Cleanup repaired file
+                        try:
+                            shutil.rmtree(repaired_path.parent, ignore_errors=True)
+                        except:
+                            pass
+                        return True, f"{method_name} (repaired)"
+            
+            # Cleanup failed repair
+            try:
+                shutil.rmtree(repaired_path.parent, ignore_errors=True)
+            except:
+                pass
+        
+        # If repair failed, try LibreOffice as last resort
+        if self.convert_with_libreoffice(input_path, output_path):
+            if output_path.exists() and output_path.stat().st_size > 0:
+                return True, "LibreOffice"
         
         return False, "none"
 
@@ -341,7 +475,7 @@ class PESUInteractiveDownloader:
         self.downloaded_files = []
 
     def detect_file_type(self, file_path: Path) -> Optional[str]:
-        """Detect actual file type from magic bytes"""
+        """Detect actual file type from magic bytes and content structure"""
         try:
             with open(file_path, "rb") as f:
                 header = f.read(8)
@@ -349,25 +483,51 @@ class PESUInteractiveDownloader:
             # Check magic bytes
             if header.startswith(b'PK\x03\x04'):
                 # It's a ZIP file - could be Office format (DOCX/PPTX/XLSX)
-                # Read more to check for Office format
+                # Read more content to check for Office format markers
                 with open(file_path, "rb") as f:
-                    content = f.read(512)
+                    content = f.read(2048)  # Read more bytes for better detection
                     content_str = content.decode('latin-1', errors='ignore')
                     
-                    if 'ppt/' in content_str or 'slideshow' in content_str.lower():
-                        return '.pptx'
-                    elif 'word/' in content_str or 'document' in content_str.lower():
+                    # Check for specific Office document markers (order matters!)
+                    # DOCX has word/ directory structure
+                    if 'word/' in content_str or 'word/_rels' in content_str or '[Content_Types].xml' in content_str and 'wordprocessingml' in content_str:
                         return '.docx'
-                    elif 'xl/' in content_str or 'workbook' in content_str.lower():
+                    # PPTX has ppt/ directory structure
+                    elif 'ppt/' in content_str or 'ppt/_rels' in content_str or 'slideshow' in content_str.lower() or 'presentationml' in content_str:
+                        return '.pptx'
+                    # XLSX has xl/ directory structure
+                    elif 'xl/' in content_str or 'xl/_rels' in content_str or 'workbook' in content_str.lower() or 'spreadsheetml' in content_str:
                         return '.xlsx'
                     else:
-                        # Generic ZIP, might be older Office format
-                        return '.pptx'  # Most common case in this context
+                        # If we can't determine, try to inspect ZIP contents
+                        try:
+                            import zipfile
+                            with zipfile.ZipFile(file_path, 'r') as zf:
+                                namelist = zf.namelist()
+                                if any('word/' in name for name in namelist):
+                                    return '.docx'
+                                elif any('ppt/' in name for name in namelist):
+                                    return '.pptx'
+                                elif any('xl/' in name for name in namelist):
+                                    return '.xlsx'
+                        except:
+                            pass
+                        # If still unknown, return None instead of guessing
+                        return None
             elif header.startswith(b'%PDF'):
                 return '.pdf'
             elif header.startswith(b'\xd0\xcf\x11\xe0'):
-                # Old Office format (DOC/PPT/XLS)
-                return '.ppt'  # Most likely in this context
+                # Old Office format (DOC/PPT/XLS) - compound file binary format
+                # Try to distinguish by reading more
+                with open(file_path, "rb") as f:
+                    content = f.read(2048)
+                    content_str = content.decode('latin-1', errors='ignore')
+                    if 'Word' in content_str or 'Microsoft Word' in content_str:
+                        return '.doc'
+                    elif 'PowerPoint' in content_str or 'Microsoft PowerPoint' in content_str:
+                        return '.ppt'
+                    else:
+                        return '.ppt'  # Default for old format
             
             return None
         except Exception:
@@ -754,21 +914,7 @@ def convert_office_to_pdf(input_folder: Path) -> List[Path]:
     """Convert DOCX/PPTX files to PDF using advanced conversion methods"""
     print(f"\n{Fore.CYAN}[5/7] Converting files to PDF...{Style.RESET_ALL}")
     
-    # Show available conversion methods
-    print(f"\nAvailable conversion methods:")
-    print(f"  • PowerPoint COM:  {'✓' if COMTYPES_AVAILABLE else '✗'} (Windows, best quality)")
-    print(f"  • Word COM:        {'✓' if COMTYPES_AVAILABLE else '✗'} (Windows)")
-    print(f"  • python-pptx:     {'✓' if PPTX_AVAILABLE else '✗'} (for repair)")
-    print(f"  • Aspose.Slides:   {'✓' if ASPOSE_AVAILABLE else '✗'} (cross-platform)")
-    print(f"  • LibreOffice:     checking...")
-    
-    if not (COMTYPES_AVAILABLE or ASPOSE_AVAILABLE):
-        print(f"\n{Fore.YELLOW}⚠ No primary conversion methods available!{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}  Install: pip install comtypes (for best quality){Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}  Or: pip install aspose-slides (cross-platform){Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}  Falling back to LibreOffice if available...{Style.RESET_ALL}\n")
-    
-    # Find all Office files
+    # Find all Office files first to determine what we're converting
     office_files = []
     for ext in ["*.docx", "*.pptx", "*.doc", "*.ppt"]:
         office_files.extend(input_folder.rglob(ext))
@@ -777,7 +923,54 @@ def convert_office_to_pdf(input_folder: Path) -> List[Path]:
         print(f"{Fore.YELLOW}No Office files to convert{Style.RESET_ALL}")
         return []
     
-    print(f"\nFound {len(office_files)} Office files to convert\n")
+    # Detect file types present
+    has_pptx = any(f.suffix.lower() in ['.pptx', '.ppt'] for f in office_files)
+    has_docx = any(f.suffix.lower() in ['.docx', '.doc'] for f in office_files)
+    
+    # Check for python-docx availability
+    try:
+        import docx
+        DOCX_AVAILABLE = True
+    except ImportError:
+        DOCX_AVAILABLE = False
+    
+    # Show available conversion methods based on file types present
+    print(f"\nAvailable conversion methods:")
+    
+    if has_pptx and has_docx:
+        print(f"  PPTX files:")
+        print(f"    • PowerPoint COM:  {'✓' if COMTYPES_AVAILABLE else '✗'} (Windows, best quality)")
+        print(f"    • python-pptx:     {'✓' if PPTX_AVAILABLE else '✗'} (for repair)")
+        print(f"    • Aspose.Slides:   {'✓' if ASPOSE_AVAILABLE else '✗'} (cross-platform)")
+        print(f"  DOCX files:")
+        print(f"    • Word COM:        {'✓' if COMTYPES_AVAILABLE else '✗'} (Windows, best quality)")
+        print(f"    • python-docx:     {'✓' if DOCX_AVAILABLE else '✗'} (for repair)")
+        print(f"  Both:")
+        print(f"    • LibreOffice:     checking...")
+    elif has_pptx:
+        print(f"  • PowerPoint COM:  {'✓' if COMTYPES_AVAILABLE else '✗'} (Windows, best quality)")
+        print(f"  • python-pptx:     {'✓' if PPTX_AVAILABLE else '✗'} (for repair)")
+        print(f"  • Aspose.Slides:   {'✓' if ASPOSE_AVAILABLE else '✗'} (cross-platform)")
+        print(f"  • LibreOffice:     checking...")
+    elif has_docx:
+        print(f"  • Word COM:        {'✓' if COMTYPES_AVAILABLE else '✗'} (Windows, best quality)")
+        print(f"  • python-docx:     {'✓' if DOCX_AVAILABLE else '✗'} (for repair)")
+        print(f"  • LibreOffice:     checking...")
+    
+    if not (COMTYPES_AVAILABLE or ASPOSE_AVAILABLE):
+        print(f"\n{Fore.YELLOW}⚠ No primary conversion methods available!{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}  Install: pip install comtypes (for best quality){Style.RESET_ALL}")
+        if has_pptx:
+            print(f"{Fore.YELLOW}  Or: pip install aspose-slides (cross-platform for PPTX){Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}  Falling back to LibreOffice if available...{Style.RESET_ALL}\n")
+    
+    print(f"\nFound {len(office_files)} Office files to convert")
+    if has_pptx and has_docx:
+        pptx_count = sum(1 for f in office_files if f.suffix.lower() in ['.pptx', '.ppt'])
+        docx_count = sum(1 for f in office_files if f.suffix.lower() in ['.docx', '.doc'])
+        print(f"  • PowerPoint: {pptx_count} file(s)")
+        print(f"  • Word: {docx_count} file(s)")
+    print()
     
     converter = OfficeConverter()
     converted_files = []

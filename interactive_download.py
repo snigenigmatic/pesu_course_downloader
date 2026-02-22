@@ -14,6 +14,7 @@ from typing import List, Dict, Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 import re
+import curses
 from colorama import Fore, Style, init as colorama_init
 from pypdf import PdfWriter
 import subprocess
@@ -44,6 +45,9 @@ except ImportError:
 # Initialize colorama
 colorama_init(autoreset=True)
 
+# Cache file for course data
+CACHE_FILE = Path("courses.json")
+
 # Resource type mapping (id parameter values)
 RESOURCE_TYPES = {
     "2": "Slides",
@@ -54,6 +58,34 @@ RESOURCE_TYPES = {
     "7": "MCQs",
     "8": "References",
 }
+
+
+class Timer:
+    """Simple timer for performance tracking"""
+    def __init__(self):
+        self.start = time.time()
+    
+    def elapsed(self) -> float:
+        return time.time() - self.start
+    
+    def pretty(self) -> str:
+        elapsed = self.elapsed()
+        if elapsed < 1:
+            return f"{elapsed*1000:.0f}ms"
+        return f"{elapsed:.1f}s"
+
+
+class Spinner:
+    """Context manager for showing a spinner during operations"""
+    def __init__(self, message: str):
+        self.message = message
+    
+    def __enter__(self):
+        print(f"  {self.message}...", end="", flush=True)
+        return self
+    
+    def __exit__(self, *args):
+        print("")
 
 
 class DOCXRepair:
@@ -560,44 +592,63 @@ class PESUInteractiveDownloader:
         print(f"{Fore.GREEN}✓ Login successful{Style.RESET_ALL}")
 
     def get_courses(self) -> List[Dict]:
-        """Get all available courses"""
+        """Get all available courses (cache-first approach)"""
         print(f"\n{Fore.CYAN}[2/7] Fetching available courses...{Style.RESET_ALL}")
-        url = f"{self.base_url}/a/g/getSubjectsCode"
-        response = self.session.get(url)
+
+        # ── always try cache first ────────────────────────────────────
+        if CACHE_FILE.exists():
+            try:
+                with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                courses = cached.get("courses", [])
+                saved_at = cached.get("_saved_at", 0)
+                age_str = self._cache_age_str(saved_at)
+                if courses:
+                    print(f"{Fore.GREEN}✓ Loaded {len(courses)} courses from cache  "
+                          f"{Fore.YELLOW}(saved {age_str}){Style.RESET_ALL}")
+                    return courses
+            except Exception:
+                print(f"{Fore.YELLOW}  Cache unreadable, fetching from server...{Style.RESET_ALL}")
+
+        # ── no cache at all → must fetch ─────────────────────────────
+        print(f"{Fore.YELLOW}  No cache found — fetching from server (first run, one-time wait)...{Style.RESET_ALL}")
+        return self._fetch_and_cache_courses()
+
+    def _cache_age_str(self, saved_at: float) -> str:
+        """Get human-readable cache age"""
+        age = time.time() - saved_at
+        if age < 3600:   return f"{age/60:.0f}m ago"
+        if age < 86400:  return f"{age/3600:.0f}h ago"
+        return f"{age/86400:.0f}d ago"
+
+    def _fetch_and_cache_courses(self) -> List[Dict]:
+        """Fetch courses from server and cache them"""
+        t = Timer()
+        with Spinner("Fetching course list from server"):
+            response = self.session.get(f"{self.base_url}/a/g/getSubjectsCode")
 
         if response.status_code != 200:
             raise Exception("Failed to fetch courses")
 
-        # Parse HTML response
         soup = BeautifulSoup(response.text, "html.parser")
-        options = soup.find_all("option")
-
         courses = []
-        for option in options:
+        for option in soup.find_all("option"):
             course_id = option.get("value")
             course_name = option.text.strip()
-
             if course_id and course_name:
-                # Clean the course ID - remove escaped quotes
-                course_id = str(course_id).strip()
-                course_id = course_id.replace('\\"', "").replace("\\'", "")
-                course_id = course_id.strip('"').strip("'")
-                course_id = course_id.replace("\\", "")
+                course_id = str(course_id).strip().replace('\\"', "").replace("\\'", "").strip('"').strip("'").replace("\\", "")
+                subject_code = course_name.split("-")[0].strip() if "-" in course_name else course_name
+                courses.append({"id": course_id, "subjectCode": subject_code, "subjectName": course_name})
 
-                # Extract subject code (before the dash if present)
-                subject_code = (
-                    course_name.split("-")[0].strip() if "-" in course_name else course_name
-                )
+        print(f"{Fore.GREEN}  Found {len(courses)} courses  {Fore.YELLOW}({t.pretty()}){Style.RESET_ALL}")
 
-                courses.append(
-                    {
-                        "id": course_id,
-                        "subjectCode": subject_code,
-                        "subjectName": course_name,
-                    }
-                )
+        try:
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump({"_saved_at": time.time(), "courses": courses}, f, indent=2, ensure_ascii=False)
+            print(f"  {Fore.CYAN}Saved to courses.json{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"  {Fore.YELLOW}⚠ Could not save cache: {e}{Style.RESET_ALL}")
 
-        print(f"{Fore.GREEN}✓ Found {len(courses)} total courses{Style.RESET_ALL}")
         return courses
 
     def filter_courses_by_year(self, courses: List[Dict]) -> List[Dict]:
@@ -1158,74 +1209,271 @@ def cleanup_unwanted_files(base_dir: Path):
         print(f"{Fore.GREEN}✓ No unwanted files found{Style.RESET_ALL}")
 
 
-def display_courses(courses: List[Dict], page_size: int = 20):
-    """Display courses in a paginated format"""
+def display_courses(courses: List[Dict], page_size: int = 10, fetch_fn=None) -> Optional[Dict]:
+    """
+    Interactive live-search course selector using curses.
+    Shows a centered search box; list filters dynamically as the user types.
+    Returns the selected course dict, or None if user pressed Esc/q.
+    
+    Args:
+        courses: List of course dictionaries
+        page_size: Number of results to show at once (default 10)
+        fetch_fn: Optional callable to fetch fresh courses from server (called on F5)
+    
+    Note: On Windows, requires 'windows-curses' package:
+          pip install windows-curses
+    """
     if not courses:
-        print(f"{Fore.RED}No courses available{Style.RESET_ALL}")
+        print("No courses available.")
         return None
 
-    print(f"\n{Fore.CYAN}{'='*80}{Style.RESET_ALL}")
-    print(f"{Fore.CYAN}Available Courses{Style.RESET_ALL}")
-    print(f"{Fore.CYAN}{'='*80}{Style.RESET_ALL}\n")
+    result = [None]  # use list so inner function can write to it
 
-    total_pages = (len(courses) + page_size - 1) // page_size
-    current_page = 0
+    def _ui(stdscr):
+        curses.curs_set(1)          # show cursor
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)   # highlight
+        curses.init_pair(2, curses.COLOR_CYAN,  -1)                  # header / border
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)                 # course code
+        curses.init_pair(4, curses.COLOR_GREEN,  -1)                 # footer hint
 
-    while True:
-        start_idx = current_page * page_size
-        end_idx = min(start_idx + page_size, len(courses))
+        query        = ""
+        selected_idx = 0    # index in the *filtered* list
+        scroll_top   = 0    # first visible row in the filtered list
+        LIST_SIZE    = 10   # max rows shown at once
 
-        for i in range(start_idx, end_idx):
-            course = courses[i]
-            # Safety check
-            subject_code = course.get('subjectCode', 'N/A')
-            subject_name = course.get('subjectName', 'N/A')
-            print(f"{i+1:3d}. {Fore.YELLOW}{subject_code:<20}{Style.RESET_ALL} {subject_name}")
+        def matches(course: Dict, q: str) -> bool:
+            q = q.lower()
+            return (q in course.get("subjectCode", "").lower() or
+                    q in course.get("subjectName", "").lower())
 
-        print(f"\n{Fore.CYAN}Page {current_page + 1}/{total_pages}{Style.RESET_ALL}")
-        print(
-            f"{Fore.CYAN}[n]ext, [p]revious, [s]earch, [q]uit, course code, or number: {Style.RESET_ALL}",
-            end="",
-        )
+        while True:
+            stdscr.erase()
+            max_h, max_w = stdscr.getmaxyx()
 
-        choice = input().strip()
+            # ── filtered list ─────────────────────────────────────────────
+            filtered = [c for c in courses if matches(c, query)] if query else courses[:]
 
-        if choice.lower() == "q":
-            return None
-        elif choice.lower() == "n" and current_page < total_pages - 1:
-            current_page += 1
-        elif choice.lower() == "p" and current_page > 0:
-            current_page -= 1
-        elif choice.lower() == "s":
-            search_term = input(f"{Fore.CYAN}Enter search term: {Style.RESET_ALL}").strip().lower()
-            filtered = [
-                c
-                for c in courses
-                if search_term in c.get("subjectCode", "").lower()
-                or search_term in c.get("subjectName", "").lower()
-            ]
-            if filtered:
-                return display_courses(filtered, page_size)
-            else:
-                print(f"{Fore.RED}No courses found matching '{search_term}'{Style.RESET_ALL}")
-        elif choice.isdigit():
+            # clamp selection
+            if selected_idx >= len(filtered):
+                selected_idx = max(0, len(filtered) - 1)
+            if selected_idx < scroll_top:
+                scroll_top = selected_idx
+            if selected_idx >= scroll_top + LIST_SIZE:
+                scroll_top = selected_idx - LIST_SIZE + 1
+
+            # ── box dimensions ────────────────────────────────────────────
+            box_w   = min(max_w - 4, 78)
+            # header(1) + border-top(1) + search(1) + divider(1) +
+            # list rows + count(1) + hint(1) + border-bot(1) = LIST_SIZE + 7
+            box_h   = LIST_SIZE + 7
+            box_x   = (max_w - box_w) // 2
+            box_y   = max(0, (max_h - box_h) // 2)
+
+            inner_w = box_w - 2   # width inside the border
+
+            # ── draw outer border ─────────────────────────────────────────
+            try:
+                # top
+                stdscr.addstr(box_y,         box_x, "╔" + "═" * (box_w - 2) + "╗", curses.color_pair(2))
+                # bottom
+                stdscr.addstr(box_y + box_h, box_x, "╚" + "═" * (box_w - 2) + "╝", curses.color_pair(2))
+                # sides
+                for row in range(1, box_h):
+                    stdscr.addstr(box_y + row, box_x,           "║", curses.color_pair(2))
+                    stdscr.addstr(box_y + row, box_x + box_w - 1, "║", curses.color_pair(2))
+            except curses.error:
+                pass
+
+            # ── header ────────────────────────────────────────────────────
+            header = " PESU Academy — Select Course "
+            header = header[:inner_w]
+            hx = box_x + 1 + (inner_w - len(header)) // 2
+            try:
+                stdscr.addstr(box_y + 1, hx, header, curses.color_pair(2) | curses.A_BOLD)
+            except curses.error:
+                pass
+
+            # ── divider after header ──────────────────────────────────────
+            try:
+                stdscr.addstr(box_y + 2, box_x, "╠" + "═" * (box_w - 2) + "╣", curses.color_pair(2))
+            except curses.error:
+                pass
+
+            # ── search bar ────────────────────────────────────────────────
+            prompt = " 🔍 "
+            search_label = (prompt + query)[:inner_w]
+            try:
+                stdscr.addstr(box_y + 3, box_x + 1, search_label.ljust(inner_w))
+            except curses.error:
+                pass
+
+            # ── divider after search ──────────────────────────────────────
+            try:
+                stdscr.addstr(box_y + 4, box_x, "╠" + "─" * (box_w - 2) + "╣", curses.color_pair(2))
+            except curses.error:
+                pass
+
+            # ── course list ───────────────────────────────────────────────
+            visible = filtered[scroll_top: scroll_top + LIST_SIZE]
+            for i, course in enumerate(visible):
+                abs_i     = scroll_top + i
+                row_y     = box_y + 5 + i
+                is_sel    = abs_i == selected_idx
+
+                code = course.get("subjectCode", "")[:18]
+                name = course.get("subjectName", "")
+                # trim name so line fits inside box
+                max_name = inner_w - len(code) - 3
+                if len(name) > max_name:
+                    name = name[:max_name - 1] + "…"
+
+                line = f" {code:<18}  {name}"
+                line = line[:inner_w]
+
+                try:
+                    if is_sel:
+                        stdscr.addstr(row_y, box_x + 1, line.ljust(inner_w), curses.color_pair(1) | curses.A_BOLD)
+                    else:
+                        stdscr.addstr(row_y, box_x + 1, f" {code:<18}", curses.color_pair(3))
+                        rest = f"  {name}"
+                        stdscr.addstr(row_y, box_x + 1 + 19, rest[:inner_w - 19])
+                except curses.error:
+                    pass
+
+            # fill blank rows if fewer than LIST_SIZE results
+            for i in range(len(visible), LIST_SIZE):
+                try:
+                    stdscr.addstr(box_y + 5 + i, box_x + 1, " " * inner_w)
+                except curses.error:
+                    pass
+
+            # ── show "no results" message if search yields nothing ───────
+            if len(filtered) == 0 and query:
+                msg = " No results. Press Ctrl+R to fetch from server, Esc to cancel "
+                try:
+                    stdscr.addstr(box_y + 5 + LIST_SIZE // 2, box_x + 1,
+                                  msg[:inner_w].center(inner_w),
+                                  curses.color_pair(3) | curses.A_BOLD)
+                except curses.error:
+                    pass
+
+            # ── count row ─────────────────────────────────────────────────
+            count_row = box_y + 5 + LIST_SIZE
+            count_str = f" {len(filtered)} course(s) found"
+            try:
+                stdscr.addstr(count_row, box_x + 1, count_str[:inner_w].ljust(inner_w), curses.color_pair(2))
+            except curses.error:
+                pass
+
+            # ── footer hint ───────────────────────────────────────────────
+            hint = " ↑↓ navigate   Enter select   Esc/q quit "
+            hint = hint[:inner_w]
+            try:
+                stdscr.addstr(box_y + box_h - 1, box_x + 1, hint.ljust(inner_w), curses.color_pair(4))
+            except curses.error:
+                pass
+
+            # ── position cursor inside search bar ────────────────────────
+            cursor_x = box_x + 1 + len(prompt) + len(query)
+            cursor_x = min(cursor_x, box_x + box_w - 2)
+            try:
+                stdscr.move(box_y + 3, cursor_x)
+            except curses.error:
+                pass
+
+            stdscr.refresh()
+
+            # ── handle input ──────────────────────────────────────────────
+            try:
+                key = stdscr.get_wch()
+            except curses.error:
+                continue
+
+            if isinstance(key, str):
+                # printable character → append to query
+                if key in ("\x1b",):          # Esc
+                    result[0] = None
+                    return
+                elif key in ("\n", "\r"):      # Enter
+                    if filtered:
+                        result[0] = filtered[selected_idx]
+                    return
+                elif key in ("\x7f", "\b"):   # Backspace
+                    query = query[:-1]
+                    selected_idx = 0
+                    scroll_top   = 0
+                elif key == "\x12" and fetch_fn is not None:  # Ctrl+R - Refresh
+                    # Exit curses temporarily, fetch, re-enter
+                    curses.endwin()
+                    print(f"\n{Fore.CYAN}Fetching fresh course list from server...{Style.RESET_ALL}")
+                    try:
+                        fresh_courses = fetch_fn()
+                        courses.clear()
+                        courses.extend(fresh_courses)
+                        selected_idx = 0
+                        scroll_top = 0
+                        query = ""  # Reset search after refresh
+                        print(f"{Fore.GREEN}✓ Done! {len(courses)} courses loaded. Press any key to continue...{Style.RESET_ALL}")
+                        input()
+                    except Exception as e:
+                        print(f"{Fore.RED}✗ Fetch failed: {e}{Style.RESET_ALL}")
+                        input("Press Enter to go back...")
+                    stdscr.refresh()
+                elif key == "q" and not query:  # q only quits when search is empty
+                    result[0] = None
+                    return
+                elif key.isprintable():
+                    query += key
+                    selected_idx = 0
+                    scroll_top   = 0
+
+            else:  # special key (integer)
+                if key == curses.KEY_UP:
+                    if selected_idx > 0:
+                        selected_idx -= 1
+                        if selected_idx < scroll_top:
+                            scroll_top = selected_idx
+                elif key == curses.KEY_DOWN:
+                    if selected_idx < len(filtered) - 1:
+                        selected_idx += 1
+                        if selected_idx >= scroll_top + LIST_SIZE:
+                            scroll_top += 1
+                elif key == curses.KEY_BACKSPACE:
+                    query = query[:-1]
+                    selected_idx = 0
+                    scroll_top   = 0
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    if filtered:
+                        result[0] = filtered[selected_idx]
+                    return
+
+    try:
+        curses.wrapper(_ui)
+    except Exception as e:
+        # Fallback in case curses fails (e.g., not in a terminal)
+        print(f"\n{Fore.YELLOW}⚠ Curses UI not available: {e}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}  On Windows, install: pip install windows-curses{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}  Falling back to basic selection...{Style.RESET_ALL}\n")
+        
+        # Simple fallback: just list and pick by number
+        for i, course in enumerate(courses, 1):
+            code = course.get('subjectCode', 'N/A')
+            name = course.get('subjectName', 'N/A')
+            print(f"{i:3d}. {code:<20} {name}")
+        
+        try:
+            choice = input(f"\n{Fore.CYAN}Enter course number (or 'q' to quit): {Style.RESET_ALL}").strip()
+            if choice.lower() == 'q':
+                return None
             idx = int(choice) - 1
             if 0 <= idx < len(courses):
                 return courses[idx]
-            else:
-                print(f"{Fore.RED}Invalid course number{Style.RESET_ALL}")
-        else:
-            # Try to match as course code (e.g., UE23CS341AA3)
-            choice_upper = choice.upper()
-            matched_course = next(
-                (c for c in courses if c.get("subjectCode", "").upper() == choice_upper),
-                None
-            )
-            if matched_course:
-                print(f"{Fore.GREEN}✓ Found course: {matched_course['subjectName']}{Style.RESET_ALL}")
-                return matched_course
-            else:
-                print(f"{Fore.RED}Invalid input. Enter a number, course code (e.g., UE23CS341AA3), or command{Style.RESET_ALL}")
+        except (ValueError, IndexError):
+            print(f"{Fore.RED}Invalid selection{Style.RESET_ALL}")
+            return None
+    
+    return result[0]
 
 
 def main():
@@ -1270,13 +1518,9 @@ def main():
             print(f"\n{Fore.RED}No courses found for selected year. Exiting.{Style.RESET_ALL}")
             return
 
-        # Save filtered courses to JSON
-        with open("courses.json", "w", encoding="utf-8") as f:
-            json.dump(courses, f, indent=2, ensure_ascii=False)
-
         # Display and select course
         print(f"\n{Fore.CYAN}[3/7] Selecting course...{Style.RESET_ALL}")
-        selected_course = display_courses(courses)
+        selected_course = display_courses(courses, fetch_fn=downloader._fetch_and_cache_courses)
 
         if not selected_course:
             print(f"\n{Fore.YELLOW}No course selected. Exiting.{Style.RESET_ALL}")

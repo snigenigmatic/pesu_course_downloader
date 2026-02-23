@@ -25,6 +25,11 @@ To `.env` add your credentials:
 python interactive_download.py
 ```
 
+### 🐧 Linux / Ubuntu Users
+```bash
+python3 interactive_download.py
+```
+
 ---
 
 ## 📄 What Each Script Does

@@ -274,6 +274,27 @@ class PPTXRepair:
         except Exception:
             return False
     
+    def repair_by_rezip_linux(self, input_path: Path, output_path: Path) -> bool:
+        """Linux-specific repair: extract and repackage using zipfile (mimics unzip+zip CLI)"""
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                try:
+                    with zipfile.ZipFile(input_path, 'r') as zip_ref:
+                        zip_ref.extractall(temp_path)
+                except zipfile.BadZipFile:
+                    return False
+
+                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
+                    for root, dirs, files in os.walk(temp_path):
+                        for file in sorted(files):  # sorted for deterministic order
+                            file_path = Path(root) / file
+                            arcname = file_path.relative_to(temp_path)
+                            zip_out.write(file_path, arcname)
+                return output_path.exists() and output_path.stat().st_size > 0
+        except Exception:
+            return False
+    
     def attempt_repair(self, input_path: Path) -> Optional[Path]:
         """Attempt all repair strategies in order"""
         temp_dir = Path(tempfile.mkdtemp())
@@ -352,113 +373,149 @@ class OfficeConverter:
             return False
     
     def convert_with_libreoffice(self, input_path: Path, output_path: Path) -> bool:
-        """Convert using LibreOffice"""
-        possible_paths = [
-            r"C:\Program Files\LibreOffice\program\soffice.exe",
-            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
-            r"C:\Program Files\LibreOffice 7\program\soffice.exe",
-            r"C:\Program Files\LibreOffice 24\program\soffice.exe",
-        ]
-        
-        soffice = None
-        for path in possible_paths:
-            if Path(path).exists():
-                soffice = path
-                break
-        
-        if not soffice:
-            return False
-        
-        # Kill any lingering processes
-        for process_name in ["soffice.exe", "soffice.bin"]:
+        """Convert using LibreOffice (cross-platform)"""
+        import platform
+        is_linux = platform.system() == "Linux"
+
+        if is_linux:
+            # On Linux, find soffice in PATH
+            soffice = shutil.which("soffice") or shutil.which("libreoffice")
+            if not soffice:
+                return False
+
             try:
                 subprocess.run(
-                    ["taskkill", "/F", "/IM", process_name, "/T"],
-                    capture_output=True,
-                    timeout=3
+                    [soffice, "--headless", "--convert-to", "pdf",
+                     "--outdir", str(input_path.parent), str(input_path)],
+                    capture_output=True, text=True, timeout=120
                 )
-            except:
-                pass
-        time.sleep(0.5)
-        
-        try:
-            if output_path.exists():
-                output_path.unlink()
-            
-            cmd = [
-                soffice,
-                "--headless",
-                "--convert-to", "pdf",
-                "--outdir", str(output_path.parent),
-                str(input_path)
+                # LibreOffice creates PDF next to input file
+                generated = input_path.with_suffix(".pdf")
+                if generated.exists():
+                    shutil.move(str(generated), str(output_path))  # safely move across filesystems
+                    return output_path.exists() and output_path.stat().st_size > 0
+                return False
+            except Exception:
+                return False
+
+        else:
+            # Original Windows logic unchanged
+            possible_paths = [
+                r"C:\Program Files\LibreOffice\program\soffice.exe",
+                r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+                r"C:\Program Files\LibreOffice 7\program\soffice.exe",
+                r"C:\Program Files\LibreOffice 24\program\soffice.exe",
             ]
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
-            )
-            
-            time.sleep(2)
-            return output_path.exists() and output_path.stat().st_size > 0
-        except Exception:
-            return False
-        finally:
+            soffice = None
+            for path in possible_paths:
+                if Path(path).exists():
+                    soffice = path
+                    break
+            if not soffice:
+                return False
+
             for process_name in ["soffice.exe", "soffice.bin"]:
                 try:
-                    subprocess.run(
-                        ["taskkill", "/F", "/IM", process_name, "/T"],
-                        capture_output=True,
-                        timeout=3
-                    )
+                    subprocess.run(["taskkill", "/F", "/IM", process_name, "/T"],
+                                   capture_output=True, timeout=3)
                 except:
                     pass
+            time.sleep(0.5)
+
+            try:
+                if output_path.exists():
+                    output_path.unlink()
+                cmd = [soffice, "--headless", "--convert-to", "pdf",
+                       "--outdir", str(output_path.parent), str(input_path)]
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=120,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+                time.sleep(2)
+                return output_path.exists() and output_path.stat().st_size > 0
+            except Exception:
+                return False
+            finally:
+                for process_name in ["soffice.exe", "soffice.bin"]:
+                    try:
+                        subprocess.run(["taskkill", "/F", "/IM", process_name, "/T"],
+                                       capture_output=True, timeout=3)
+                    except:
+                        pass
     
     def convert_pptx_to_pdf(self, input_path: Path, output_path: Path) -> Tuple[bool, str]:
         """Convert PPTX to PDF with repair and multiple conversion methods"""
-        # Try PowerPoint COM first (best quality)
-        if self.convert_with_powerpoint(input_path, output_path):
-            if output_path.exists() and output_path.stat().st_size > 0:
-                return True, "PowerPoint COM"
-        
-        # Try repair strategies before Aspose (python-pptx repair attempted here)
-        repaired_path = self.pptx_repairer.attempt_repair(input_path)
-        if repaired_path:
-            methods = [
-                (self.convert_with_powerpoint, "PowerPoint COM"),
-                (self.convert_with_libreoffice, "LibreOffice"),
-                (self.convert_with_aspose_slides, "Aspose.Slides")
-            ]
-            for method, method_name in methods:
-                if method(repaired_path, output_path):
-                    if output_path.exists() and output_path.stat().st_size > 0:
-                        # Cleanup repaired file
-                        try:
-                            shutil.rmtree(repaired_path.parent, ignore_errors=True)
-                        except:
-                            pass
-                        return True, f"{method_name} (repaired)"
-            
-            # Cleanup failed repair
+        import platform
+        is_linux = platform.system() == "Linux"
+
+        if is_linux:
+            # On Linux: try repair-then-libreoffice first (most reliable)
+            repaired_path = None
+
+            # Try python-pptx repair first
+            temp_dir = Path(tempfile.mkdtemp())
+            repaired_candidate = temp_dir / f"repaired_{input_path.name}"
+
+            if self.pptx_repairer.repair_by_rezip_linux(input_path, repaired_candidate):
+                repaired_path = repaired_candidate
+
+            target = repaired_path if repaired_path else input_path
+            method_suffix = " (repaired)" if repaired_path else ""
+
+            if self.convert_with_libreoffice(target, output_path):
+                if output_path.exists() and output_path.stat().st_size > 0:
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except:
+                        pass
+                    return True, f"LibreOffice{method_suffix}"
+
+            # Fallback: Aspose if available
+            if self.convert_with_aspose_slides(target, output_path):
+                if output_path.exists() and output_path.stat().st_size > 0:
+                    return True, f"Aspose.Slides{method_suffix}"
+
             try:
-                shutil.rmtree(repaired_path.parent, ignore_errors=True)
+                shutil.rmtree(temp_dir, ignore_errors=True)
             except:
                 pass
-        
-        # If repair failed, try direct conversion with remaining methods
-        remaining_methods = [
-            (self.convert_with_aspose_slides, "Aspose.Slides"),
-            (self.convert_with_libreoffice, "LibreOffice")
-        ]
-        
-        for method, method_name in remaining_methods:
-            if method(input_path, output_path):
+            return False, "none"
+
+        else:
+            # Original Windows logic unchanged
+            if self.convert_with_powerpoint(input_path, output_path):
                 if output_path.exists() and output_path.stat().st_size > 0:
-                    return True, method_name
-        
-        return False, "none"
+                    return True, "PowerPoint COM"
+
+            repaired_path = self.pptx_repairer.attempt_repair(input_path)
+            if repaired_path:
+                methods = [
+                    (self.convert_with_powerpoint, "PowerPoint COM"),
+                    (self.convert_with_libreoffice, "LibreOffice"),
+                    (self.convert_with_aspose_slides, "Aspose.Slides")
+                ]
+                for method, method_name in methods:
+                    if method(repaired_path, output_path):
+                        if output_path.exists() and output_path.stat().st_size > 0:
+                            try:
+                                shutil.rmtree(repaired_path.parent, ignore_errors=True)
+                            except:
+                                pass
+                            return True, f"{method_name} (repaired)"
+                try:
+                    shutil.rmtree(repaired_path.parent, ignore_errors=True)
+                except:
+                    pass
+
+            for method, method_name in [
+                (self.convert_with_aspose_slides, "Aspose.Slides"),
+                (self.convert_with_libreoffice, "LibreOffice")
+            ]:
+                if method(input_path, output_path):
+                    if output_path.exists() and output_path.stat().st_size > 0:
+                        return True, method_name
+
+            return False, "none"
     
     def convert_docx_to_pdf(self, input_path: Path, output_path: Path) -> Tuple[bool, str]:
         """Convert DOCX to PDF with repair and multiple conversion methods"""
@@ -1623,3 +1680,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

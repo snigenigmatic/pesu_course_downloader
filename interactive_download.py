@@ -563,6 +563,40 @@ class PESUInteractiveDownloader:
         self.base_url = "https://www.pesuacademy.com/Academy"
         self.downloaded_files = []
 
+    def logout(self):
+        """Logout from PESU Academy and cleanup session"""
+        print(f"\n{Fore.CYAN}Logging out...{Style.RESET_ALL}")
+        try:
+            # Attempt server-side logout
+            self.session.get(f"{self.base_url}/logout", timeout=5)
+            print(f"{Fore.GREEN}✓ Logged out successfully{Style.RESET_ALL}")
+        except:
+            pass  # Ignore logout errors
+        finally:
+            # Always close local session
+            try:
+                self.session.close()
+            except:
+                pass
+
+    def is_session_valid(self) -> bool:
+        """Check if the current session is still valid"""
+        try:
+            response = self.session.get(f"{self.base_url}/", timeout=5)
+            # If redirected to login page, session expired
+            if "login" in response.url.lower() or "authfailed" in response.url:
+                return False
+            return True
+        except:
+            return False
+
+    def validate_session(self):
+        """Validate session and raise error if expired"""
+        if not self.is_session_valid():
+            raise Exception(
+                f"{Fore.RED}Session expired! Please restart the script to login again.{Style.RESET_ALL}"
+            )
+
     def detect_file_type(self, file_path: Path) -> Optional[str]:
         """Detect actual file type from magic bytes and content structure"""
         try:
@@ -883,6 +917,9 @@ class PESUInteractiveDownloader:
         base_dir: Path,
     ):
         """Download selected resources for selected units"""
+        # Validate session before starting downloads
+        self.validate_session()
+        
         print(f"\n{Fore.CYAN}[4/7] Downloading resources...{Style.RESET_ALL}")
 
         units = self.get_units(course_id)
@@ -1683,6 +1720,13 @@ def main():
     except Exception as e:
         print(f"\n{Fore.RED}Error: {e}{Style.RESET_ALL}")
         sys.exit(1)
+    
+    finally:
+        # Always logout and cleanup session
+        try:
+            downloader.logout()
+        except:
+            pass
 
 
 if __name__ == "__main__":

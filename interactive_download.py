@@ -1630,8 +1630,15 @@ def main():
         resource_names = [RESOURCE_TYPES[r] for r in selected_resources]
         print(f"{Fore.GREEN}✓ Selected resources: {', '.join(resource_names)}{Style.RESET_ALL}")
 
-        # Create base directory
-        base_dir = Path("downloads") / f"{course_code}"
+        # Create base directory with subject name
+        # Sanitize course name for folder name
+        safe_course_name = "".join(
+            c if c.isalnum() or c in (" ", "-", "_") else "_"
+            for c in course_name
+        ).strip()[:60]
+        safe_course_name = "_".join(safe_course_name.split())
+        
+        base_dir = Path("downloads") / f"{safe_course_name}"
         base_dir.mkdir(parents=True, exist_ok=True)
 
         # Download resources

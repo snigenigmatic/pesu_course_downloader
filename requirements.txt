@@ -1,3 +1,5 @@
+# -- Python 3.11 or 3.12 required (windows-curses does not support 3.13+) -- 
+
 # Core dependencies
 requests>=2.28.2
 beautifulsoup4>=4.12.2
@@ -6,12 +8,11 @@ pypdf>=3.11.0
 python-docx>=0.8.11
 
 # Windows-specific: Required for curses UI on Windows
-windows-curses>=2.3.0; platform_system=="Windows"
+windows-curses>=2.3.0; platform_system=="Windows" and python_version<"3.13"
+comtypes>=1.1.11; platform_system=="Windows"
 
-# Optional / recommended for conversion (Windows / better fidelity)
+# Office file handling (required)
 python-pptx>=0.6.21
-comtypes>=1.1.11
-
 
 # Environment variables loader
 python-dotenv>=1.0.0

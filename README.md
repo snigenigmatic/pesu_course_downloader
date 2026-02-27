@@ -53,10 +53,17 @@ python3 interactive_download.py
 ### **`interactive_download.py`**  (Main Script) :<br>
 
   Complete interactive workflow: <br>
-  - Login → Select Course → Select Units → Download → Convert PPTX/DOCX to PDF → Merge PDFs → Cleanup.
+  -  Login → Select Course → Select Units → Download → Convert PPTX/DOCX to PDF → Detect & Remove Duplicates → Merge PDFs → Cleanup.
   -  Includes automatic corruption repair for damaged files. **This is the only file you need to run.**
 ---
 
+### **`pdf_dedup.py`** (Auto-loaded by main script) :
+Detects and removes duplicate PDFs after conversion.
+- Skips files with different sizes instantly (zero cost)
+- Uses perceptual hashing (pHash) only on same-size candidates
+- Prompts before deleting — or pass `auto_delete=True` for batch use
+
+**Requires:** `pip install pymupdf`
 
 ##  Notes
 

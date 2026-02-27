@@ -93,35 +93,34 @@ def _pdf_fingerprint(pdf_path: Path,
     """
     try:
         import fitz
-        doc = fitz.open(str(pdf_path))
-        total = len(doc)
+        with fitz.open(str(pdf_path)) as doc:
+            total = len(doc)
 
-        # Need enough interior pages
-        interior_start = skip_edges
-        interior_end   = total - skip_edges  # exclusive
-        interior_count = interior_end - interior_start
+            # Need enough interior pages
+            interior_start = skip_edges
+            interior_end   = total - skip_edges  # exclusive
+            interior_count = interior_end - interior_start
 
-        if interior_count <= 0:
-            # PDF is tiny — just hash all pages
-            page_indices = list(range(total))
-        else:
-            # Evenly-spaced sample across the interior
-            if interior_count <= sample_count:
-                page_indices = list(range(interior_start, interior_end))
+            if interior_count <= 0:
+                # PDF is tiny — just hash all pages
+                page_indices = list(range(total))
             else:
-                step = interior_count / sample_count
-                page_indices = [
-                    interior_start + int(i * step)
-                    for i in range(sample_count)
-                ]
+                # Evenly-spaced sample across the interior
+                if interior_count <= sample_count:
+                    page_indices = list(range(interior_start, interior_end))
+                else:
+                    step = interior_count / sample_count
+                    page_indices = [
+                        interior_start + int(i * step)
+                        for i in range(sample_count)
+                    ]
 
-        hashes = []
-        for idx in page_indices:
-            page   = doc[idx]
-            pixels = _render_page_gray(page, size=32)
-            hashes.append(_phash(pixels))
+            hashes = []
+            for idx in page_indices:
+                page   = doc[idx]
+                pixels = _render_page_gray(page, size=32)
+                hashes.append(_phash(pixels))
 
-        doc.close()
         return hashes if hashes else None
 
     except Exception as e:
@@ -164,26 +163,36 @@ def _renumber_files(pdf_files: List[Path]) -> List[Path]:
     """
     Renumber the leading integer in filenames to be sequential (1, 2, 3, …).
     Files that have no leading number are left untouched.
+    Uses two-phase rename (via temp names) to avoid collisions on Windows.
     Returns the new paths.
     """
-    numbered   = [(p, _leading_number(p.name)) for p in pdf_files]
+    numbered = [(p, _leading_number(p.name)) for p in pdf_files]
     # Sort by current number (None last)
     numbered.sort(key=lambda x: (x[1] is None, x[1] or 0))
 
+    # Phase 1: rename all numbered files to unique temp names to avoid collisions
+    # e.g. "3.Topic.pdf" → "__tmp_3.Topic.pdf"
+    temp_numbered = []
+    for path, old_num in numbered:
+        if old_num is None:
+            temp_numbered.append((path, None))
+            continue
+        tmp_path = path.parent / f"__tmp_{path.name}"
+        path.rename(tmp_path)
+        temp_numbered.append((tmp_path, old_num))
+
+    # Phase 2: rename temp files to final sequential names
     new_paths = []
     counter   = 1
 
-    for path, old_num in numbered:
+    for tmp_path, old_num in temp_numbered:
         if old_num is None:
-            new_paths.append(path)
+            new_paths.append(tmp_path)
             continue
 
-        # Replace only the leading number
-        new_name = re.sub(r'^\d+', str(counter), path.name, count=1)
-        new_path = path.parent / new_name
-
-        if new_path != path:
-            path.rename(new_path)
+        new_name = re.sub(r'^\d+', str(counter), tmp_path.name.replace("__tmp_", "", 1), count=1)
+        new_path = tmp_path.parent / new_name
+        tmp_path.rename(new_path)
 
         new_paths.append(new_path)
         counter += 1

@@ -23,13 +23,10 @@ Insert point in main():
       deduplicate_pdfs_in_folder(base_dir, selected_resources)
 """
 
-import hashlib
 import math
-import os
 import re
-import shutil
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from colorama import Fore, Style
 

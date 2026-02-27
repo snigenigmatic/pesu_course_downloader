@@ -10,8 +10,8 @@ git clone https://github.com/ilb225112/pesu_course_downloader.git
 cd pesu_course_downloader
 ```
 
-### Create a Virtual Environment (Recommended)
-> **Required:** Python 3.11 or 3.12 (3.13+ not supported due to `windows-curses`)
+### Create a Virtual Environment (Considered good practice)
+> **Required:** Python 3.11 or 3.12 for WINDOWS (3.13+ not supported due to `windows-curses`)
 
 **Windows:**
 ```bash
@@ -19,9 +19,19 @@ py -3.12 -m venv venv
 venv\Scripts\activate
 ```
 
-**Linux/Mac:**
+**Linux (Ubuntu/Debian):**
 ```bash
-python3.12 -m venv venv
+# Install venv support first (one-time setup)
+sudo apt install python3-venv
+
+# Then create and activate
+python3 -m venv venv
+source venv/bin/activate
+```
+
+**Mac:**
+```bash
+python3 -m venv venv
 source venv/bin/activate
 ```
 

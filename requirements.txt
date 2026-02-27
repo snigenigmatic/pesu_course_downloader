@@ -6,6 +6,7 @@ beautifulsoup4>=4.12.2
 colorama>=0.4.6
 pypdf>=3.11.0
 python-docx>=0.8.11
+pymupdf>=1.23.0  # For PDF duplicate detection (fitz)
 
 # Windows-specific: Required for curses UI on Windows
 windows-curses>=2.3.0; platform_system=="Windows" and python_version<"3.13"

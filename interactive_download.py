@@ -17,6 +17,7 @@ import re
 import curses
 from colorama import Fore, Style, init as colorama_init
 from pypdf import PdfWriter
+from pdf_dedup import deduplicate_pdfs_in_folder
 import subprocess
 import tempfile
 import time
@@ -1700,6 +1701,9 @@ def main():
 
             if convert_choice == "y":
                 convert_office_to_pdf(base_dir)
+
+        # Detect and remove duplicate PDFs
+        deduplicate_pdfs_in_folder(base_dir, selected_resources)
 
         # Ask for PDF merging
         print(f"\n{Fore.CYAN}Do you want to merge PDFs by resource type? (y/n): {Style.RESET_ALL}", end="")
